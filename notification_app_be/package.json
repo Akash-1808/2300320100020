@@ -1,0 +1,16 @@
+{
+  "name": "notification_app_be",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/stage6.ts --demo",
+    "start": "tsx src/stage6.ts",
+    "test": "tsx src/stage6.ts --demo"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "tsx": "^4.20.4",
+    "typescript": "^5.8.3"
+  }
+}

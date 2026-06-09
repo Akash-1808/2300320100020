@@ -167,3 +167,82 @@ Push new notifications via SSE/WebSocket (instead of fetching on every load)
 
 Pros: best UX, reduces repeated page-load requests, near-real-time delivery.
 Cons: need connection management and scaling (fan-out), sticky sessions or dedicated push infrastructure, more complex testing and failure handling.
+
+# Stage 5
+
+The current `notify_all` approach is not reliable for 50,000 students because it sends email, writes to DB, and pushes in one loop. If one email fails midway, the whole run becomes inconsistent and slow.
+
+## Shortcomings
+- One failure can stop or slow the full batch.
+- Email sending is too slow to do synchronously for every student.
+- DB writes and email delivery should not depend on the same request thread.
+- If the process crashes midway, some students get notified and some do not.
+
+## Better Design
+Use an async flow:
+1. Save the notification job once.
+2. Store per-student notification records in the DB.
+3. Push email/in-app work into a queue.
+4. Let workers send emails in small batches with retries.
+5. Use a dead-letter queue for failures after retries.
+
+## Should DB save and email happen together?
+No, not in the same synchronous step. Save the DB record first, then send email asynchronously.
+- Good part: DB stays the source of truth.
+- If email fails: retry later without losing the record.
+- If DB save fails: do not send the email.
+
+## Revised Pseudocode
+```text
+function notify_all(student_ids, message):
+  job_id = save_notification_job(message)
+
+  for student_id in student_ids:
+    begin transaction
+      save_to_db(student_id, message, job_id)
+      save_outbox_event(student_id, message, job_id)
+    commit
+
+  queue_worker_job(job_id)
+
+worker(job_id):
+  records = get_pending_outbox_records(job_id)
+  for record in records in small_batches:
+    try:
+      send_email(record.student_id, record.message)
+      mark_email_sent(record.id)
+      push_to_app(record.student_id, record.message)
+    except error:
+      mark_retry(record.id)
+
+  move_failed_records_to_dead_letter_queue()
+```
+
+## Why this is better
+- Faster: request returns quickly after queueing.
+- Safer: retries handle temporary email failures.
+- Scalable: workers can run in parallel.
+- Correct: DB record is kept even if email delivery is delayed.
+
+## Tradeoff
+- More moving parts: queue, workers, retry logic, and monitoring.
+- Slight delay: email may not be instant, but the system becomes much more reliable.
+
+# Stage 6
+
+The priority inbox should always show the top 10 unread notifications, with placement items first, then result, then event, and newer items before older ones.
+
+## Approach
+- Fetch notifications from the provided API.
+- Score each notification by type weight and recency.
+- Keep only the best 10 in a small min-heap.
+- When a new notification arrives, compare it with the current lowest item and replace it only if it is more important.
+
+## Why this is efficient
+- You do not sort the full list every time.
+- Each new item is handled in `O(log 10)` time.
+- Memory stays small because only 10 items are kept.
+
+## Tradeoff
+- Very fast for top-10 display.
+- It depends on a scoring rule, so if the business priority changes, the scoring weights must be updated.
